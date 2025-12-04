@@ -14,7 +14,7 @@ THe program has built-in help, available via the `-h` or `--help` flag:
 ~~~~
 usage:
 
-    ./uvc-util {options/actions/target selection}
+    ./build/Release/uvc-util {options/actions/target selection}
 
   Options:
 
@@ -33,10 +33,14 @@ usage:
     -c/--list-controls                     Display a list of UVC controls available for
                                            the target device
 
-    -S <control-name>                      Display available information for the given
-    --show-control=<control-name>          UVC control:  component fields for multi-value
-                                           types, minimum, maximum, resolution, and default
-                                           value when provided:
+    -f/--list-formats                      Display video streaming formats, resolutions,
+                                           framerates, and color spaces supported by the
+                                           target device
+
+    -S (<control-name>|*)                  Display available information for the given
+    --show-control=(<control-name>|*)      UVC control (or all controls for "*").  Component
+                                           fields for multi-component controls, minimum, maximum,
+                                           resolution, and default value when provided:
 
         pan-tilt-abs {
           type-description: {
@@ -57,6 +61,8 @@ usage:
 
     -s <control-name>=<value>              Set the value of a control; see below for a
     --set=<control-name>=<value>           description of <value>
+
+    -r/--reset-all                         Reset all controls with a default value to that value
 
     Specifying <value> for -s/--set:
 
