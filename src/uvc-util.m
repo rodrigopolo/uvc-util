@@ -82,6 +82,7 @@ UVCUtilVersionString(void)
 static struct option uvcUtilOptions[] = {
                                          { "list-devices",                    no_argument,       NULL, 'd' },
                                          { "list-controls",                   no_argument,       NULL, 'c' },
+                                         { "list-formats",                    no_argument,       NULL, 'f' },
                                          { "show-control",                    required_argument, NULL, 'S' },
                                          { "set",                             required_argument, NULL, 's' },
                                          { "get",                             required_argument, NULL, 'g' },
@@ -128,6 +129,10 @@ usage(
       "\n"
       "    -c/--list-controls                     Display a list of UVC controls available for\n"
       "                                           the target device\n"
+      "\n"
+      "    -f/--list-formats                      Display video streaming formats, resolutions,\n"
+      "                                           framerates, and color spaces supported by the\n"
+      "                                           target device\n"
       "\n"
       "    -S (<control-name>|*)                  Display available information for the given\n"
       "    --show-control=(<control-name>|*)      UVC control (or all controls for \"*\").  Component\n"
@@ -381,7 +386,18 @@ main(
         }
         break;
       }
-      
+
+      case 'f': {
+        if ( targetDevice ) {
+          [targetDevice displayFormatInformation];
+        } else {
+          fprintf(stderr, "ERROR:  no target device selected\n");
+          rc = ENODEV;
+          if ( exitOnErrors ) goto cleanupAndExit;
+        }
+        break;
+      }
+
       case '0': {
         targetDevice = nil;
         break;

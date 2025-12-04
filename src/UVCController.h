@@ -178,6 +178,14 @@
 */
 - (UVCControl*) controlWithName:(NSString*)controlName;
 
+/*!
+  @method displayFormatInformation
+
+  Prints information about the video streaming formats supported by the device,
+  including resolutions, framerates, color spaces, and compression formats.
+*/
+- (void) displayFormatInformation;
+
 @end
 
 /*!

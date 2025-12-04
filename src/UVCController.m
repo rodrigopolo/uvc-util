@@ -13,6 +13,7 @@
 //#define DEBUG_WRITE_UVC_HEADER_TO_FILE
 
 #import "UVCController.h"
+#include <string.h>
 
 //
 // UVC descriptor codes:
@@ -25,6 +26,19 @@
 #define VC_SELECTOR_UNIT        0x04
 #define VC_PROCESSING_UNIT      0x05
 #define VC_EXTENSION_UNIT       0x06
+
+// Video Streaming (VS) interface descriptor subtypes:
+#define VS_INPUT_HEADER         0x01
+#define VS_OUTPUT_HEADER        0x02
+#define VS_FORMAT_UNCOMPRESSED  0x04
+#define VS_FRAME_UNCOMPRESSED   0x05
+#define VS_FORMAT_MJPEG         0x06
+#define VS_FRAME_MJPEG          0x07
+#define VS_COLORFORMAT          0x0D
+#define VS_FORMAT_FRAME_BASED   0x10
+#define VS_FRAME_FRAME_BASED    0x11
+#define VS_FORMAT_H264          0x13
+#define VS_FRAME_H264           0x14
 
 // On newer versions of Mac OS X, the kIOMasterPortDefault enum has been
 // replaced by kIOMainPortDefault.
@@ -140,6 +154,79 @@ enum {
   kUVCProcessingUnitControlEnableAnalogVideoLockStatus        = 17,
   kUVCProcessingUnitControlEnableAutoContrast                 = 18
 };
+
+//
+// Video Streaming (VS) descriptor structures:
+//
+typedef struct {
+  UInt8               bLength;
+  UInt8               bDescriptorType;
+  UInt8               bDescriptorSubType;
+  UInt8               bNumFormats;
+  UInt16              wTotalLength;
+  UInt8               bEndpointAddress;
+  UInt8               bmInfo;
+  UInt8               bTerminalLink;
+  UInt8               bStillCaptureMethod;
+  UInt8               bTriggerSupport;
+  UInt8               bTriggerUsage;
+  UInt8               bControlSize;
+  UInt8               bmaControls[];
+} __attribute__((packed)) UVC_VS_Input_Header_Descriptor;
+
+typedef struct {
+  UInt8               bLength;
+  UInt8               bDescriptorType;
+  UInt8               bDescriptorSubType;
+  UInt8               bFormatIndex;
+  UInt8               bNumFrameDescriptors;
+  UInt8               guidFormat[16];
+  UInt8               bBitsPerPixel;
+  UInt8               bDefaultFrameIndex;
+  UInt8               bAspectRatioX;
+  UInt8               bAspectRatioY;
+  UInt8               bmInterlaceFlags;
+  UInt8               bCopyProtect;
+} __attribute__((packed)) UVC_VS_Format_Uncompressed_Descriptor;
+
+typedef struct {
+  UInt8               bLength;
+  UInt8               bDescriptorType;
+  UInt8               bDescriptorSubType;
+  UInt8               bFormatIndex;
+  UInt8               bNumFrameDescriptors;
+  UInt8               bmFlags;
+  UInt8               bDefaultFrameIndex;
+  UInt8               bAspectRatioX;
+  UInt8               bAspectRatioY;
+  UInt8               bmInterlaceFlags;
+  UInt8               bCopyProtect;
+} __attribute__((packed)) UVC_VS_Format_MJPEG_Descriptor;
+
+typedef struct {
+  UInt8               bLength;
+  UInt8               bDescriptorType;
+  UInt8               bDescriptorSubType;
+  UInt8               bFrameIndex;
+  UInt8               bmCapabilities;
+  UInt16              wWidth;
+  UInt16              wHeight;
+  UInt32              dwMinBitRate;
+  UInt32              dwMaxBitRate;
+  UInt32              dwMaxVideoFrameBufferSize;
+  UInt32              dwDefaultFrameInterval;
+  UInt8               bFrameIntervalType;
+  UInt32              dwFrameInterval[];
+} __attribute__((packed)) UVC_VS_Frame_Descriptor;
+
+typedef struct {
+  UInt8               bLength;
+  UInt8               bDescriptorType;
+  UInt8               bDescriptorSubType;
+  UInt8               bColorPrimaries;
+  UInt8               bTransferCharacteristics;
+  UInt8               bMatrixCoefficients;
+} __attribute__((packed)) UVC_VS_ColorMatching_Descriptor;
 
 //
 // UVC request opcodes:
@@ -1349,6 +1436,342 @@ uvc_control_t     UVCControllerControls[] = {
     }
     if ( [theControl isMemberOfClass:[NSNull class]] ) return nil;
     return theControl;
+  }
+
+//
+
+  - (void) displayFormatInformation
+  {
+    //
+    // This method scans for Video Streaming interfaces and displays format information
+    //
+    printf("\n========================================\n");
+    printf("Video Streaming Format Information\n");
+    printf("========================================\n\n");
+
+    // We need to re-find the device to enumerate its streaming interfaces
+    // Create a matching dictionary for UVC devices
+    CFMutableDictionaryRef matchingDict = IOServiceMatching(kIOUSBDeviceClassName);
+    if ( !matchingDict ) {
+      printf("Error: Unable to create matching dictionary\n");
+      return;
+    }
+
+    // Find all USB devices
+    io_iterator_t deviceIter;
+    kern_return_t krc = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &deviceIter);
+    if ( krc != KERN_SUCCESS ) {
+      printf("Error: Unable to enumerate USB devices\n");
+      return;
+    }
+
+    // Search for our device by location ID
+    io_service_t deviceService = 0;
+    io_service_t candidateDevice;
+    while ( (candidateDevice = IOIteratorNext(deviceIter)) ) {
+      CFNumberRef locationRef = (CFNumberRef)IORegistryEntryCreateCFProperty(candidateDevice, CFSTR(kUSBDevicePropertyLocationID), kCFAllocatorDefault, 0);
+      if ( locationRef ) {
+        UInt32 candidateLocation;
+        CFNumberGetValue(locationRef, kCFNumberSInt32Type, &candidateLocation);
+        CFRelease(locationRef);
+
+        if ( candidateLocation == _locationId ) {
+          deviceService = candidateDevice;
+          break;
+        }
+      }
+      IOObjectRelease(candidateDevice);
+    }
+    IOObjectRelease(deviceIter);
+
+    if ( !deviceService ) {
+      printf("Error: Device not found\n");
+      return;
+    }
+
+    // Get device interface
+    IOCFPlugInInterface **plugInInterface = NULL;
+    SInt32 score;
+    krc = IOCreatePlugInInterfaceForService(deviceService, kIOUSBDeviceUserClientTypeID, kIOCFPlugInInterfaceID, &plugInInterface, &score);
+    IOObjectRelease(deviceService);
+
+    if ( (krc != kIOReturnSuccess) || !plugInInterface ) {
+      printf("Error: Unable to create plugin interface\n");
+      return;
+    }
+
+    IOUSBDeviceInterface **deviceInterface = NULL;
+    IOReturn hrc = (*plugInInterface)->QueryInterface(plugInInterface, CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID), (LPVOID*)&deviceInterface);
+    IODestroyPlugInInterface(plugInInterface);
+
+    if ( (hrc != 0) || !deviceInterface ) {
+      printf("Error: Unable to query device interface\n");
+      return;
+    }
+
+    // Find Video Streaming interfaces
+    io_iterator_t interfaceIter;
+    IOUSBFindInterfaceRequest interfaceRequest = {
+      .bInterfaceClass = kUSBVideoInterfaceClass,
+      .bInterfaceSubClass = kUSBVideoStreamingSubClass,
+      .bInterfaceProtocol = kIOUSBFindInterfaceDontCare,
+      .bAlternateSetting = kIOUSBFindInterfaceDontCare
+    };
+
+    hrc = (*deviceInterface)->CreateInterfaceIterator(deviceInterface, &interfaceRequest, &interfaceIter);
+    (*deviceInterface)->Release(deviceInterface);
+
+    if ( (hrc != 0) || !interfaceIter ) {
+      printf("Error: Unable to find video streaming interfaces\n");
+      return;
+    }
+
+    io_service_t usbInterface;
+    int interfaceIndex = 0;
+
+    while ( (usbInterface = IOIteratorNext(interfaceIter)) ) {
+      IOUSBInterfaceInterface220 **streamInterface = NULL;
+      IOCFPlugInInterface **plugInInterface = NULL;
+      SInt32 score;
+      kern_return_t krc;
+
+      // Create plugin for this interface
+      krc = IOCreatePlugInInterfaceForService(usbInterface, kIOUSBInterfaceUserClientTypeID, kIOCFPlugInInterfaceID, &plugInInterface, &score);
+      IOObjectRelease(usbInterface);
+
+      if ( (krc != kIOReturnSuccess) || !plugInInterface ) continue;
+
+      hrc = (*plugInInterface)->QueryInterface(plugInInterface, CFUUIDGetUUIDBytes(kIOUSBInterfaceInterfaceID), (LPVOID *)&streamInterface);
+      IODestroyPlugInInterface(plugInInterface);
+
+      if ( (hrc != 0) || !streamInterface ) continue;
+
+      // Get the interface descriptor
+      IOUSBDescriptorHeader *interfaceDescriptor = NULL;
+      interfaceDescriptor = (*streamInterface)->FindNextAssociatedDescriptor(streamInterface, NULL, CS_INTERFACE);
+
+      if ( interfaceDescriptor ) {
+        UVC_Descriptor_Prefix *descriptorPrefix = (UVC_Descriptor_Prefix*)interfaceDescriptor;
+
+        if ( descriptorPrefix->bDescriptorSubType == VS_INPUT_HEADER ) {
+          UVC_VS_Input_Header_Descriptor *vsHeader = (UVC_VS_Input_Header_Descriptor*)interfaceDescriptor;
+          void *basePtr = (void*)vsHeader;
+          void *endPtr = basePtr + NSSwapLittleShortToHost(vsHeader->wTotalLength);
+
+          // Parse format and frame descriptors
+          basePtr += vsHeader->bLength;
+          const char *currentFormatName = NULL;
+          int currentBitsPerPixel = 0;
+          BOOL firstFormat = YES;
+
+          // Color space tracking
+          const char *colorSpace = NULL;
+          const char *transferChar = NULL;
+          const char *videoRange = NULL;
+
+          // Track printed entries to avoid duplicates
+          NSMutableSet *printedEntries = [[NSMutableSet alloc] init];
+
+          while ( basePtr < endPtr ) {
+            descriptorPrefix = (UVC_Descriptor_Prefix*)basePtr;
+
+            if ( descriptorPrefix->bDescriptorType == CS_INTERFACE ) {
+              switch ( descriptorPrefix->bDescriptorSubType ) {
+
+                case VS_COLORFORMAT: {
+                  UVC_VS_ColorMatching_Descriptor *colorDesc = (UVC_VS_ColorMatching_Descriptor*)basePtr;
+
+                  // Color Primaries (defines the color space)
+                  switch (colorDesc->bColorPrimaries) {
+                    case 0: colorSpace = "Unspecified"; break;
+                    case 1: colorSpace = "BT.709"; break;
+                    case 2: colorSpace = "BT.470-2M"; break;
+                    case 3: colorSpace = "BT.470-2BG"; break;
+                    case 4: colorSpace = "SMPTE 170M (BT.601)"; break;
+                    case 5: colorSpace = "SMPTE 240M"; break;
+                    default: colorSpace = "Unknown"; break;
+                  }
+
+                  // Transfer Characteristics
+                  switch (colorDesc->bTransferCharacteristics) {
+                    case 0: transferChar = "Unspecified"; break;
+                    case 1: transferChar = "BT.709"; break;
+                    case 2: transferChar = "BT.470-2M"; break;
+                    case 3: transferChar = "BT.470-2BG"; break;
+                    case 4: transferChar = "BT.601"; break;
+                    case 5: transferChar = "SMPTE 240M"; break;
+                    case 6: transferChar = "Linear"; break;
+                    case 7: transferChar = "sRGB"; break;
+                    default: transferChar = "Unknown"; break;
+                  }
+
+                  // Matrix Coefficients (also affects color space, and implies range)
+                  switch (colorDesc->bMatrixCoefficients) {
+                    case 0: videoRange = "Unspecified"; break;
+                    case 1: videoRange = "BT.709"; break;
+                    case 2: videoRange = "FCC"; break;
+                    case 3: videoRange = "BT.470-2BG"; break;
+                    case 4: videoRange = "BT.601"; break;
+                    case 5: videoRange = "SMPTE 240M"; break;
+                    default: videoRange = "Unknown"; break;
+                  }
+
+                  break;
+                }
+
+                case VS_FORMAT_UNCOMPRESSED: {
+                  UVC_VS_Format_Uncompressed_Descriptor *formatDesc = (UVC_VS_Format_Uncompressed_Descriptor*)basePtr;
+
+                  // Identify format by GUID and determine bit depth
+                  int bitDepth = 8; // Default to 8-bit
+                  if (memcmp(formatDesc->guidFormat, (UInt8[]){0x59, 0x55, 0x59, 0x32, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}, 16) == 0) {
+                    currentFormatName = "YUY2";
+                    bitDepth = 8;
+                  } else if (memcmp(formatDesc->guidFormat, (UInt8[]){0x4e, 0x56, 0x31, 0x32, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}, 16) == 0) {
+                    currentFormatName = "NV12";
+                    bitDepth = 8;
+                  } else if (memcmp(formatDesc->guidFormat, (UInt8[]){0x50, 0x30, 0x31, 0x30, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}, 16) == 0) {
+                    currentFormatName = "P010";
+                    bitDepth = 10;
+                  } else if (memcmp(formatDesc->guidFormat, (UInt8[]){0x50, 0x32, 0x31, 0x30, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}, 16) == 0) {
+                    currentFormatName = "P210";
+                    bitDepth = 10;
+                  } else if (memcmp(formatDesc->guidFormat, (UInt8[]){0x49, 0x34, 0x32, 0x30, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}, 16) == 0) {
+                    currentFormatName = "I420";
+                    bitDepth = 8;
+                  } else if (memcmp(formatDesc->guidFormat, (UInt8[]){0x55, 0x59, 0x56, 0x59, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}, 16) == 0) {
+                    currentFormatName = "UYVY";
+                    bitDepth = 8;
+                  } else {
+                    // Try to extract FourCC from GUID
+                    static char fourcc[5];
+                    fourcc[0] = formatDesc->guidFormat[0];
+                    fourcc[1] = formatDesc->guidFormat[1];
+                    fourcc[2] = formatDesc->guidFormat[2];
+                    fourcc[3] = formatDesc->guidFormat[3];
+                    fourcc[4] = '\0';
+                    currentFormatName = fourcc;
+                    bitDepth = 8; // Unknown, assume 8-bit
+                  }
+
+                  currentBitsPerPixel = bitDepth; // Store actual bit depth, not bpp
+
+                  if (firstFormat) {
+                    printf("\n%-10s %-12s %-8s %-10s %s\n", "Format", "Resolution", "FPS", "Bit Depth", "Subsampling");
+                    printf("---------- ------------ -------- ---------- ------------------------------------------------\n");
+                    firstFormat = NO;
+                  }
+                  break;
+                }
+
+                case VS_FORMAT_MJPEG: {
+                  UVC_VS_Format_MJPEG_Descriptor *formatDesc = (UVC_VS_Format_MJPEG_Descriptor*)basePtr;
+                  currentFormatName = "MJPEG";
+                  currentBitsPerPixel = 8; // MJPEG typically 8-bit
+
+                  if (firstFormat) {
+                    printf("\n%-10s %-12s %-8s %-10s %s\n", "Format", "Resolution", "FPS", "Bit Depth", "Subsampling");
+                    printf("---------- ------------ -------- ---------- ------------------------------------------------\n");
+                    firstFormat = NO;
+                  }
+                  break;
+                }
+
+                case VS_FRAME_UNCOMPRESSED:
+                case VS_FRAME_MJPEG: {
+                  UVC_VS_Frame_Descriptor *frameDesc = (UVC_VS_Frame_Descriptor*)basePtr;
+
+                  char resolution[16];
+                  snprintf(resolution, sizeof(resolution), "%dx%d",
+                           NSSwapLittleShortToHost(frameDesc->wWidth),
+                           NSSwapLittleShortToHost(frameDesc->wHeight));
+
+                  // Collect frame rates
+                  char fpsStr[128] = "";
+                  UInt8 intervalType = frameDesc->bFrameIntervalType;
+                  if ( intervalType == 0 ) {
+                    // Continuous frame intervals
+                    if ( descriptorPrefix->bLength >= 38 ) {
+                      UInt32 minInterval = NSSwapLittleLongToHost(frameDesc->dwFrameInterval[0]);
+                      UInt32 maxInterval = NSSwapLittleLongToHost(frameDesc->dwFrameInterval[1]);
+                      snprintf(fpsStr, sizeof(fpsStr), "%.0f-%.0f",
+                               10000000.0 / maxInterval, 10000000.0 / minInterval);
+                    }
+                  } else {
+                    // Discrete frame intervals - show only key rates
+                    int fpsCount = 0;
+                    for (int i = 0; i < intervalType && i < 3; i++) {
+                      UInt32 interval = NSSwapLittleLongToHost(frameDesc->dwFrameInterval[i]);
+                      char temp[16];
+                      snprintf(temp, sizeof(temp), "%s%.0f", (i > 0 ? "," : ""), 10000000.0 / interval);
+                      strncat(fpsStr, temp, sizeof(fpsStr) - strlen(fpsStr) - 1);
+                      fpsCount++;
+                    }
+                    if (intervalType > 3) {
+                      strncat(fpsStr, ",+", sizeof(fpsStr) - strlen(fpsStr) - 1);
+                    }
+                  }
+
+                  // Build bit depth and subsampling strings
+                  char bitDepthStr[16] = "";
+                  char subsamplingStr[64] = "";
+
+                  if (currentBitsPerPixel > 0) {
+                    snprintf(bitDepthStr, sizeof(bitDepthStr), "%d-bit", currentBitsPerPixel);
+                  }
+
+                  // Determine subsampling based on format name
+                  if (strcmp(currentFormatName, "YUY2") == 0 || strcmp(currentFormatName, "UYVY") == 0) {
+                    snprintf(subsamplingStr, sizeof(subsamplingStr), "4:2:2");
+                  } else if (strcmp(currentFormatName, "NV12") == 0 || strcmp(currentFormatName, "I420") == 0 || strcmp(currentFormatName, "P010") == 0) {
+                    snprintf(subsamplingStr, sizeof(subsamplingStr), "4:2:0");
+                  } else if (strcmp(currentFormatName, "MJPEG") == 0) {
+                    snprintf(subsamplingStr, sizeof(subsamplingStr), "4:2:0 (compressed)");
+                  }
+
+                  // Create unique key for deduplication
+                  NSString *entryKey = [NSString stringWithFormat:@"%s|%s|%s|%s",
+                                        currentFormatName, resolution, fpsStr, bitDepthStr];
+
+                  // Only print if we haven't seen this exact entry before
+                  if (![printedEntries containsObject:entryKey]) {
+                    [printedEntries addObject:entryKey];
+                    printf("%-10s %-12s %-8s %-10s %s\n", currentFormatName, resolution, fpsStr, bitDepthStr, subsamplingStr);
+                  }
+                  break;
+                }
+              }
+            }
+
+            basePtr += descriptorPrefix->bLength;
+          }
+
+          // Display color space information if available
+          if (colorSpace || transferChar || videoRange) {
+            printf("---------- ------------ -------- ---------- ------------------------------------------------\n");
+            printf("\nColor Space Information:\n");
+            if (colorSpace) printf("  Color Primaries: %s\n", colorSpace);
+            if (transferChar) printf("  Transfer: %s\n", transferChar);
+            if (videoRange) printf("  Matrix/Range: %s\n", videoRange);
+          }
+
+          // Clean up
+          [printedEntries release];
+        }
+      }
+
+      (*streamInterface)->Release(streamInterface);
+    }
+
+    IOObjectRelease(interfaceIter);
+    printf("---------- ------------ -------- ---------- ------------------------------------------------\n");
+    printf("\nNotes:\n");
+    printf("  - Bit Depth: Bits per color channel (8-bit SDR, 10-bit HDR)\n");
+    printf("  - Subsampling: 4:2:2 (half chroma), 4:2:0 (quarter chroma)\n");
+    printf("  - Color Space: BT.709 (HD), BT.601 (SD), affects color reproduction\n");
+    printf("  - Video Range: Full (0-255) or Limited (16-235) - UVC doesn't always specify\n");
+    printf("  - FPS: Shows up to first 3 rates (+ indicates more available)\n");
+    printf("========================================\n\n");
   }
 
 @end
